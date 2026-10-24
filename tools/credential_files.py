@@ -198,12 +198,14 @@ def _walk_skill_tree(root: Path) -> Iterator[tuple[Path, list[Path]]]:
 
 
 def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[dict[str, str]]:
-    """Directory mount entries for all skill dirs (local + external + project).
+    """Directory mount entries for all skill dirs -- deliberately none.
 
-    Bind mounts follow symlinks, so a dir containing any symlink is replaced by a sanitized
-    temp copy (regular files only); symlink-free dirs are returned directly, zero overhead.
+    Mounting the skills tree into a backend puts every SKILL.md on a filesystem the
+    agent's own tools can read (read_file, terminal, search_files), so a skill body
+    could always be pulled into the parent context. Skill execution goes through
+    skill_run instead: the host reads the document and hands it to a subagent.
     """
-    return [_mount(_safe_skills_path(d), cp) for d, cp in _skill_dir_roots(container_base)]
+    return []
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
@@ -235,10 +237,8 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
 
 def iter_skills_files(container_base: str = "/root/.hermes") -> list[dict[str, str]]:
-    """Per-file entries for all skills files (for backends that upload individually)."""
-    return [_mount(item, f"{container_root}/{item.relative_to(host_dir).as_posix()}")
-            for host_dir, container_root in _skill_dir_roots(container_base)
-            for _base, files in _walk_skill_tree(host_dir) for item in files]
+    """Per-file entries for skills files -- deliberately none (see above)."""
+    return []
 
 
 # --- Cache directory mounts (documents, images, audio, videos, screenshots) ---

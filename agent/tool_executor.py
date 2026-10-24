@@ -755,7 +755,16 @@ def _dispatch_authorized_once(
     from tools.connectors.data_use import collect_data_use
     with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
         try:
-            return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+            from tools.agent_context import bind_agent
+
+            def _bind_and_execute():
+                # Registry handlers have no agent in their signature; expose the
+                # executing agent for the duration of the call so skill_run can
+                # delegate and skill_view can tell parent from worker.
+                with bind_agent(agent):
+                    return execute(ref.args)
+
+            return _run_with_activity_heartbeat(agent, ref.name, _bind_and_execute)
         finally:
             state.data_use = frozenset(data_use)
 

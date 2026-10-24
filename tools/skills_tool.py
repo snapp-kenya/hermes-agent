@@ -616,6 +616,24 @@ def skill_view(
     or path ("axolotl", "03-fine-tuning/axolotl"); "<plugin>:<skill>" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
     slash/preload callers render the message themselves."""
+    # The top-level agent never receives a skill body: every later turn in that
+    # session would pay for it as input tokens. Workers (depth >= 1) still get the
+    # document, because their context is discarded after the call.
+    from tools.agent_context import agent_depth
+
+    if file_path is None and agent_depth() == 0:
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "skill_view is disabled for the top-level agent: a skill document must "
+                    "not enter this context. Call skill_run(name=..., request=...) instead -- "
+                    "it executes the skill in a subagent and returns only that subagent's report."
+                ),
+                "hint": "Use skill_find(query) to discover a skill, then skill_run(name, request).",
+            },
+            ensure_ascii=False,
+        )
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
@@ -783,4 +801,194 @@ def _skill_view_with_bump(args, **kw):
 
 registry.register(
     name="skill_view", toolset="skills", schema=SKILL_VIEW_SCHEMA, handler=_skill_view_with_bump,
+    check_fn=check_skills_requirements, emoji="📚")
+
+
+# ---------------------------------------------------------------------------
+# skill_run / skill_find: execute a skill in a subagent, keep the body out of the
+# parent. skill_view above is the only way to obtain the text, and it refuses at
+# depth 0, so the document can only ever reach a worker's context.
+# ---------------------------------------------------------------------------
+
+WORKER_PREAMBLE = (
+    "You are a skill worker: a disposable agent executing one skill for a caller that "
+    "cannot see it. The complete skill document follows. Treat it as the authority on "
+    "method; where it is wrong or impossible in this environment, do the reasonable thing "
+    "and say so in notes. Actually do the work -- every claim in your report needs real "
+    "command output or an artifact behind it. No user is present: never ask questions; if "
+    "something essential is missing, return status=blocked and say what you need. Files "
+    "inside the skill directory can be opened with "
+    "skill_view(name='<skill>', file_path='references/whatever.md'). Return ONLY a JSON "
+    "object with keys: status (ok|partial|blocked), answer (the text the caller should "
+    "relay), result, evidence (array), artifacts (array), notes.\n\n"
+    "===== SKILL DOCUMENT BEGINS =====\n"
+)
+
+_STOPWORDS = frozenset(
+    "a an the and or of for to in on at with by from is are be do does did please can could "
+    "would should i you we my me it this that these those how what when where why which use "
+    "using make get need want help new".split()
+)
+
+
+def _skill_roots() -> List[Path]:
+    """Skill directories in precedence order.
+
+    ``skill_search_dirs()`` returns ``([(tier, Path), ...], active_dir)``, so unwrap
+    the tier when present.
+    """
+    try:
+        roots, _active = skill_search_dirs()
+    except Exception:
+        roots = []
+    out: List[Path] = []
+    for item in roots or []:
+        d = Path(item[1] if isinstance(item, tuple) else item)
+        if d.is_dir() and d not in out:
+            out.append(d)
+    return out
+
+
+def _skill_md_for(name: str) -> Optional[Path]:
+    """Locate a skill's SKILL.md by directory name, then by frontmatter name."""
+    for root in _skill_roots():
+        direct = root / name
+        if (direct / "SKILL.md").is_file():
+            return direct / "SKILL.md"
+        for md in root.rglob("SKILL.md"):
+            if md.parent.name == name:
+                return md
+    for root in _skill_roots():
+        for md in root.rglob("SKILL.md"):
+            try:
+                from agent.skill_utils import parse_frontmatter
+
+                fm, _body = parse_frontmatter(md.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            if str(fm.get("name") or "") == name:
+                return md
+    return None
+
+
+def _tokens(text: str) -> set:
+    import re
+
+    return {w for w in re.findall(r"[a-z0-9]{3,}", text.lower()) if w not in _STOPWORDS}
+
+
+def skill_run(name: str, request: str, task_id: str = None, **kw) -> str:
+    """Execute one skill inside a subagent; return only that subagent's report."""
+    from tools.agent_context import current_agent
+
+    parent = current_agent()
+    if parent is None:
+        return tool_error("skill_run must be called by an agent (no agent context bound).",
+                          success=False)
+    if not name or not request:
+        return tool_error("skill_run requires both 'name' and 'request'.", success=False)
+
+    skill_md = _skill_md_for(str(name))
+    if skill_md is None:
+        return tool_error(f"No skill named {name!r}.", success=False)
+    try:
+        body = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return tool_error(f"Could not read {skill_md}: {exc}", success=False)
+    if len(body) > 200_000:
+        body = body[:200_000] + "\n\n[... truncated at 200k chars ...]"
+
+    from tools.delegate_tool import delegate_task
+
+    return delegate_task(
+        goal=f"Execute the '{name}' skill for this request: {request}",
+        context=WORKER_PREAMBLE + body + "\n===== SKILL DOCUMENT ENDS =====\n\n"
+                                        f"Request: {request}",
+        parent_agent=parent,
+        background=False,
+    )
+
+
+def skill_find(query: str, limit: int = 5, task_id: str = None, **kw) -> str:
+    """Deterministic keyword ranking over the catalog. Names and purposes only."""
+    import re
+
+    if not query:
+        return tool_error("skill_find requires 'query'.", success=False)
+    try:
+        limit = max(1, min(int(limit or 5), 25))
+    except (TypeError, ValueError):
+        limit = 5
+    from agent.skill_utils import parse_frontmatter
+
+    q = _tokens(str(query))
+    scored: List[Tuple[float, str, str]] = []
+    for root in _skill_roots():
+        for md in root.rglob("SKILL.md"):
+            try:
+                fm, _body = parse_frontmatter(md.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            sname = str(fm.get("name") or md.parent.name)
+            purpose = re.sub(r"\s+", " ", str(fm.get("description") or "")).strip()
+            score = 3.0 * len(q & _tokens(sname.replace("-", " ").replace("_", " "))) + \
+                1.0 * len(q & _tokens(purpose))
+            if sname.lower() in str(query).lower():
+                score += 5.0
+            if score > 0:
+                scored.append((round(score, 2), sname, purpose))
+
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return json.dumps(
+        [{"skill": n, "score": s, "purpose": (p[:90] + "...") if len(p) > 90 else p}
+         for s, n, p in scored[:limit]],
+        ensure_ascii=False,
+    )
+
+
+SKILL_RUN_SCHEMA = {
+    "name": "skill_run",
+    "description": (
+        "Execute one of the installed skills. The skill document is loaded inside a "
+        "subagent, never into this conversation; only that subagent's JSON report comes "
+        "back. Use this instead of reading a skill, and instead of applying a skill's "
+        "procedure yourself."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Skill name, e.g. 'arxiv'."},
+            "request": {"type": "string",
+                        "description": "The concrete task, phrased so a worker can act on it alone."},
+        },
+        "required": ["name", "request"],
+    },
+}
+
+SKILL_FIND_SCHEMA = {
+    "name": "skill_find",
+    "description": (
+        "Find which installed skills can do a job. Deterministic keyword ranking over "
+        "skill names and descriptions; returns names, scores and short purposes only -- "
+        "never a skill body. Follow with skill_run(name, request)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What needs doing, in a few words."},
+            "limit": {"type": "integer", "description": "Max results (default 5)."},
+        },
+        "required": ["query"],
+    },
+}
+
+registry.register(
+    name="skill_run", toolset="skills", schema=SKILL_RUN_SCHEMA,
+    handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""),
+                                        task_id=kw.get("task_id"), **kw),
+    check_fn=check_skills_requirements, emoji="📚")
+registry.register(
+    name="skill_find", toolset="skills", schema=SKILL_FIND_SCHEMA,
+    handler=lambda args, **kw: skill_find(args.get("query", ""), limit=args.get("limit", 5),
+                                          task_id=kw.get("task_id")),
     check_fn=check_skills_requirements, emoji="📚")
