@@ -54,6 +54,12 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
     assert.equal(stamp.bundleEnv, undefined)
     assert.deepEqual(stamp.runtime, { ...runtime, commands: { hermes: `bin/hermes-${feature.slice(0, 7)}` } })
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(build, 'agent-payload/app/install-stamp.json'), 'utf8')), stamp)
+    // The payload doubles as an installation root: the backend spawn and the updater
+    // resolve <repo>/.hermes/bin/<name>, so the launchers must exist there too.
+    const installationLauncher = path.join(build, 'agent-payload/app/.hermes/bin/hermes')
+    assert.ok(fs.existsSync(installationLauncher), 'payload is missing .hermes/bin/hermes')
+    assert.match(fs.readFileSync(installationLauncher, 'utf8'), new RegExp(`bin/hermes-${feature.slice(0, 7)}`))
+    assert.ok(fs.statSync(installationLauncher).mode & 0o111, '.hermes/bin/hermes is not executable')
     // A commit bundle records its baked defaults/clears as data so the smoke
     // driver can replay them without running the app.
     const bundleEnv = { HERMES_HOME: null, HERMES_DATA_DIR_SUFFIX: '-suffix', HERMES_PREVIEW_FULL_CONNECTORS: '1' }

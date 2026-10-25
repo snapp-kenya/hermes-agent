@@ -139,6 +139,29 @@ export function stageDesktopLaunchers(root, identity = productIdentity) {
   manifest.runtime.commands = commands
   manifest.launchers = launchers
   writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n')
+
+  // A sealed payload is also an installation root. hermes_cli._launchers.installation_command()
+  // and the desktop updater resolve <repo>/.hermes/bin/<name>, and that is what the app execs to
+  // start the backend — a payload without it fails every spawn with "cannot execute: No such file
+  // or directory". The real launchers sit at the payload root and derive their root from their
+  // adjacent ../, so one level deeper they must be forwarded to, never copied.
+  // Windows keeps its own .exe/.cmd publishing path, which this does not touch.
+  if (!windows) {
+    const installationBin = join(root, manifest.runtime.repoDir, '.hermes', 'bin')
+    mkdirSync(installationBin, { recursive: true })
+    for (const [name, destination] of Object.entries(commands)) {
+      writeFileSync(
+        join(installationBin, name),
+        '#!/bin/sh\n' +
+          '# Installation launcher for a sealed payload: the backend spawn and the updater\n' +
+          '# resolve <repo>/.hermes/bin/<name>. The real launcher lives at the payload root\n' +
+          '# and resolves its own root from its adjacent ../, so forward instead of copying.\n' +
+          'exec "$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)/' + destination + '" "$@"\n',
+        { mode: 0o755 }
+      )
+    }
+  }
+
   return manifest
 }
 
