@@ -121,6 +121,20 @@ def main(argv=None):
     here = launcher_dir(argv[0] if argv else sys.argv[0])
     configure(here)
     importlib.import_module("hermes_bootstrap")
+    # A service unit can run a sibling module through this launcher
+    # (`--run-module hermes_cli.stderr_timestamp ...`, hermes_cli/_launchers.py
+    # implements the same form). Without it the module name reaches the CLI parser
+    # as an unknown command and the unit exits instantly.
+    if len(argv) > 1 and argv[1] == "--run-module":
+        import runpy
+
+        if len(argv) < 3:
+            sys.exit("hermes: --run-module needs a module")
+        module_name = argv[2]
+        del argv[1:3]
+        sys.argv[:] = argv
+        runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+        return 0
     module = importlib.import_module(HERMES_ENTRY_MODULE)
     target = getattr(module, HERMES_ENTRY_FUNC)
     # main() reads sys.argv; hand it the real argv (argv[0] stays the

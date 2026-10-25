@@ -70,6 +70,21 @@ export PYTHONPATH="$REPO:$SITE"
 # in launcher_wrapper.py). The -c bootstrap below runs addsitedir() on it.
 export HERMES_SITE="$SITE"
 export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
+{extra}# launchd/systemd start the gateway through this launcher as
+#   <launcher> --run-module hermes_cli.stderr_timestamp --error-log ... -- <cmd>
+# (hermes_cli/gateway_launchd.py). hermes_cli._launchers implements that form for a
+# store launcher; this sealed one must match it, or the module name reaches the CLI
+# parser as an unknown command, the unit exits instantly and the gateway never comes
+# up — the desktop then fails its boot deadline.
+if [ "${{1:-}}" = "--run-module" ]; then
+    [ "$#" -ge 2 ] || {{ printf '%s\\n' 'hermes: --run-module needs a module' >&2; exit 2; }}
+    module="$2"
+    shift 2
+    # Same argv shape hermes_cli/_launchers.py builds: [launcher, *module args];
+    # runpy then rewrites argv[0] to the module's file. Leaving the module name in
+    # argv[1] makes argparse read it as a positional and drop the real flags.
+    exec "$PYTHON" -P -c 'import os, runpy, site, sys; site.addsitedir(os.environ["HERMES_SITE"]); mod = sys.argv[1]; sys.argv = [sys.argv[0]] + sys.argv[2:]; runpy.run_module(mod, run_name="__main__", alter_sys=True)' "$module" "$@"
+fi
 {extra}exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
 '''
 
