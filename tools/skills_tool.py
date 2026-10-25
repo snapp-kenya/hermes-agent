@@ -984,8 +984,7 @@ SKILL_FIND_SCHEMA = {
 
 registry.register(
     name="skill_run", toolset="skills", schema=SKILL_RUN_SCHEMA,
-    handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""),
-                                        task_id=kw.get("task_id"), **kw),
+    handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""), **kw),
     check_fn=check_skills_requirements, emoji="📚")
 registry.register(
     name="skill_find", toolset="skills", schema=SKILL_FIND_SCHEMA,
