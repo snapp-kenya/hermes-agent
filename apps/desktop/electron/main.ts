@@ -11579,6 +11579,10 @@ const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 // `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
 // what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
+  const startedAt = Date.now()
+  // Without a start line, the wait for a restarted owner is invisible in desktop.log:
+  // the exit line alone cannot distinguish "took 27s" from "never ran".
+  rememberLog(`[gateway] restarting the ${ownerProfile} owner gateway (client timeout ${Math.round(GATEWAY_RESTART_CLIENT_TIMEOUT_MS / 1000)}s)`)
   const result = await runGatewayOwnerRestart(async args => {
     const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
 
@@ -11592,7 +11596,8 @@ async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
   }, ownerProfile)
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
-  rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`)
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+  rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code} after ${elapsed}s${reason ? `: ${reason}` : ''}`)
 }
 
 // A ready gateway whose boot commit differs from this Hermes (it outlived `hermes update`) is
@@ -12006,6 +12011,10 @@ async function startHermes(requestedProfile?: string) {
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
 
+    // The attach-or-start step can take tens of seconds (each served profile pays a
+    // WAL-holder scan at boot). Log its bounds so desktop.log shows where the wait went.
+    const ensureStartedAt = Date.now()
+    rememberLog('[backend] ensuring the local gateway (attach or start)')
     const connection = await ensureLocalGateway(() => runGatewayEnsure(
       { ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}) },
       resolveHermesCwd(),
@@ -12016,7 +12025,7 @@ async function startHermes(requestedProfile?: string) {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     backendStartFailure = null
-    rememberLog('[backend] Hermes gateway is ready')
+    rememberLog(`[backend] Hermes gateway is ready after ${((Date.now() - ensureStartedAt) / 1000).toFixed(1)}s`)
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
     bootstrapRepairAttempt = 0
 
