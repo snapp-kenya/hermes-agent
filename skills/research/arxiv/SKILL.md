@@ -31,13 +31,13 @@ The API returns Atom XML. Parse with `grep`/`sed` or pipe through `python` for c
 ### Basic search
 
 ```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:%22GRPO%22+AND+all:%22reinforcement+learning%22&max_results=5"
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5"
 ```
 
 ### Clean output (parse XML to readable format)
 
 ```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:%22GRPO%22+AND+all:%22reinforcement+learning%22&max_results=5&sortBy=submittedDate&sortOrder=descending" | python -c "
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python -c "
 import sys, xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom'}
 root = ET.parse(sys.stdin).getroot()
@@ -61,40 +61,31 @@ for i, entry in enumerate(root.findall('a:entry', ns)):
 
 | Prefix | Searches | Example |
 |--------|----------|---------|
-| `all:` | All fields | `all:%22transformer+attention%22` |
-| `ti:` | Title | `ti:%22large+language+models%22` |
+| `all:` | All fields | `all:transformer+attention` |
+| `ti:` | Title | `ti:large+language+models` |
 | `au:` | Author | `au:vaswani` |
-| `abs:` | Abstract | `abs:%22reinforcement+learning%22` |
+| `abs:` | Abstract | `abs:reinforcement+learning` |
 | `cat:` | Category | `cat:cs.AI` |
 | `co:` | Comment | `co:accepted+NeurIPS` |
 
 ### Boolean operators
 
-`+` in a query string is a **space**, not AND. Unquoted multi-word terms match loosely
-(relevance/OR across the corpus), so `all:GRPO+reinforcement+learning` returns 529,240
-results and, combined with `sortBy=submittedDate`, silently returns the newest papers in
-the corpus — none of them on topic. Quote each term (`%22`) or use explicit `+AND+`:
-
 ```
-# Conjunction — what a multi-word topic query almost always needs
-search_query=all:%22GRPO%22+AND+all:%22reinforcement+learning%22
+# AND (default when using +)
+search_query=all:transformer+attention
 
 # OR
 search_query=all:GPT+OR+all:BERT
 
 # AND NOT
-search_query=all:%22language+model%22+ANDNOT+all:vision
+search_query=all:language+model+ANDNOT+all:vision
 
 # Exact phrase
-search_query=ti:%22chain+of+thought%22
+search_query=ti:"chain+of+thought"
 
 # Combined
 search_query=au:hinton+AND+cat:cs.LG
 ```
-
-Sanity-check `opensearch:totalResults` before trusting a result set: a topic query that
-returns hundreds of thousands of hits hit the loose-match failure, not a broad field. A
-quoted conjunction for the example above returns 1,946.
 
 ## Sort and Pagination
 
