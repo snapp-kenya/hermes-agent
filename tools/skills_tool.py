@@ -900,12 +900,15 @@ def skill_run(name: str, request: str, task_id: str = None, **kw) -> str:
 
     from tools.delegate_tool import delegate_task
 
+    # delegate_task(background=None) resolves to False (tools/delegate_tool.py:581),
+    # so this call is synchronous: the parent turn blocks for the child's entire
+    # runtime and receives its report as the tool result. A code-review skill can
+    # take minutes, during which the desktop shows no progress for that span.
     return delegate_task(
         goal=f"Execute the '{name}' skill for this request: {request}",
         context=WORKER_PREAMBLE + body + "\n===== SKILL DOCUMENT ENDS =====\n\n"
                                         f"Request: {request}",
         parent_agent=parent,
-        background=False,
     )
 
 
@@ -983,11 +986,11 @@ SKILL_FIND_SCHEMA = {
 }
 
 registry.register(
-    name="skill_run", toolset="skills", schema=SKILL_RUN_SCHEMA,
+    name="skill_run", toolset="delegation", schema=SKILL_RUN_SCHEMA,
     handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""), **kw),
     check_fn=check_skills_requirements, emoji="📚")
 registry.register(
-    name="skill_find", toolset="skills", schema=SKILL_FIND_SCHEMA,
+    name="skill_find", toolset="delegation", schema=SKILL_FIND_SCHEMA,
     handler=lambda args, **kw: skill_find(args.get("query", ""), limit=args.get("limit", 5),
                                           task_id=kw.get("task_id")),
     check_fn=check_skills_requirements, emoji="📚")
