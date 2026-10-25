@@ -30,9 +30,32 @@ INERT_SNAPSHOT_DIRS = (
 )
 
 
+def _warn_dirty_checkout(repo: Path, ref: str) -> None:
+    """git archive ships a commit, never the working tree.
+
+    An uncommitted fix stays out of the payload, and the rebuild looks fine —
+    the bundle just doesn't contain it. Name the files instead of shipping stale.
+    """
+    if len(ref) >= 7 and all(char in "0123456789abcdef" for char in ref.lower()):
+        return  # an explicit revision says what it means
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                            cwd=repo, capture_output=True, text=True)
+    if status.returncode != 0:
+        return
+    dirty = [line for line in status.stdout.splitlines() if line.strip()]
+    if not dirty:
+        return
+    print(f"[snapshot] warning: {ref} archives the commit, not the working tree — "
+          f"{len(dirty)} tracked file(s) with uncommitted changes are NOT in this snapshot:",
+          file=sys.stderr)
+    for line in dirty[:10]:
+        print(f"[snapshot]   {line}", file=sys.stderr)
+
+
 def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] = ()) -> None:
     """Archive a resolved git revision without carrying checkout metadata."""
     repo, destination = repo.resolve(), destination.resolve()
+    _warn_dirty_checkout(repo, ref)
     if repo == destination or repo.is_relative_to(destination):
         raise ValueError("the snapshot destination must not contain the source checkout")
     with tempfile.TemporaryDirectory(prefix="hermes-archive-") as temp:
