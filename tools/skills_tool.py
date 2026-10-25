@@ -877,7 +877,8 @@ def _tokens(text: str) -> set:
     return {w for w in re.findall(r"[a-z0-9]{3,}", text.lower()) if w not in _STOPWORDS}
 
 
-def skill_run(name: str, request: str, task_id: str = None, **kw) -> str:
+def skill_run(name: str, request: str, task_id: str | None = None,
+              background: bool | None = None, **kw) -> str:
     """Execute one skill inside a subagent; return only that subagent's report."""
     from tools.agent_context import current_agent
 
@@ -900,15 +901,16 @@ def skill_run(name: str, request: str, task_id: str = None, **kw) -> str:
 
     from tools.delegate_tool import delegate_task
 
-    # delegate_task(background=None) resolves to False (tools/delegate_tool.py:581),
-    # so this call is synchronous: the parent turn blocks for the child's entire
-    # runtime and receives its report as the tool result. A code-review skill can
-    # take minutes, during which the desktop shows no progress for that span.
+    # The caller picks the rail. background=False waits for the child and returns
+    # its report in this turn; background=True returns a dispatch handle and the
+    # report arrives as a delegation completion. None keeps delegate_task's own
+    # default (False, tools/delegate_tool.py:581), so existing callers are unchanged.
     return delegate_task(
         goal=f"Execute the '{name}' skill for this request: {request}",
         context=WORKER_PREAMBLE + body + "\n===== SKILL DOCUMENT ENDS =====\n\n"
                                         f"Request: {request}",
         parent_agent=parent,
+        background=background,
     )
 
 
@@ -955,7 +957,9 @@ SKILL_RUN_SCHEMA = {
         "Execute one of the installed skills. The skill document is loaded inside a "
         "subagent, never into this conversation; only that subagent's JSON report comes "
         "back. Use this instead of reading a skill, and instead of applying a skill's "
-        "procedure yourself."
+        "procedure yourself. Choose the rail with 'background': false blocks this turn "
+        "until the report is ready, true returns a dispatch handle and the report "
+        "arrives as a delegation completion."
     ),
     "parameters": {
         "type": "object",
@@ -963,6 +967,17 @@ SKILL_RUN_SCHEMA = {
             "name": {"type": "string", "description": "Skill name, e.g. 'arxiv'."},
             "request": {"type": "string",
                         "description": "The concrete task, phrased so a worker can act on it alone."},
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "false (default): wait for the subagent and return its report in this turn, "
+                    "blocking the turn for the skill's entire runtime — a code review can take "
+                    "minutes. true: return a dispatch handle immediately and let the report "
+                    "arrive later as a delegation completion, which keeps the turn responsive "
+                    "but puts the result on your next turn. Omit when you need the report "
+                    "before deciding your next step."
+                ),
+            },
         },
         "required": ["name", "request"],
     },
@@ -987,7 +1002,8 @@ SKILL_FIND_SCHEMA = {
 
 registry.register(
     name="skill_run", toolset="delegation", schema=SKILL_RUN_SCHEMA,
-    handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""), **kw),
+    handler=lambda args, **kw: skill_run(args.get("name", ""), args.get("request", ""),
+                                        background=args.get("background"), **kw),
     check_fn=check_skills_requirements, emoji="📚")
 registry.register(
     name="skill_find", toolset="delegation", schema=SKILL_FIND_SCHEMA,
